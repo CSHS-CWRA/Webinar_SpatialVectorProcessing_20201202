@@ -5,9 +5,10 @@ This repository provides the presentation and demonstration files for the "Spati
 Prior to the webinar, please run the following script in R to install the required packages for the webinar.
 
 ``` r
-# install.packages("devtools")
-library(devtools)
-devtools::install_github("rchlumsk/RavenR")
+package_list <- c("dplyr","sf","magrittr","tidyr","ggplot2","knitr",
+                  "ggspatial","here","raster","bcmaps","rnaturalearth",
+                  "rgeos","bcmapsdata")
+install.packages(package_list)
 ```
 
 ## Register for the webinar
