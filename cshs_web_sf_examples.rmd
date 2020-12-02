@@ -1,0 +1,433 @@
+---
+title: |
+    | **CSHS Webinar**
+    | Introduction to Spatial Vector Data Analysis in R
+    | Examples
+author: R.D. (Dan) Moore
+date: "`r format(Sys.time(), '%Y-%B-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: false
+    theme: cerulean
+bibliography: R_backgrounders.bib
+---
+
+# Load libraries
+
+```{R, warning = FALSE, message = FALSE}
+library(dplyr)
+library(sf)
+library(magrittr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(ggspatial)
+library(here)
+library(raster)
+library(bcmaps)
+library(rnaturalearth)
+library(rgeos)
+library(bcmapsdata)
+```
+
+```{r, warning = FALSE, message = FALSE}
+# options for plots
+theme_set(theme_bw())
+my_blue <- rgb(0.2, 0.2, 1.0, alpha = 0.2)
+```
+
+# How to run these examples
+
+To run these examples, follow these steps:
+
+1. Ensure that you have all of the required packages installed. To install a package, you can execute `install.packages(`**package_name**`)` via the console.
+
+2. Note that you will need to download the **bcmapsdata** package from GitHub. You can do this by executing `install.packages('bcmapsdata', repos = 'https://bcgov.github.io/drat/')` at the console.
+
+3. The Biogeoclimatic Ecological Zone data can be manually downloaded via 
+
+* https://catalogue.data.gov.bc.ca/dataset/bec-map/resource/46ceb84a-3f6d-436c-b4c1-c89beb72d11a#edc-pow
+
+Alternatively, they can be accessed via the following code, which also stores the data on the local hard drive as an RDA file:
+
+```{r, eval = FALSE}
+# bec_fn is the name of file into which the data will be saved, for example:
+#    bec_fn <- "c:/Data/bec.rda"
+bec_sf <- bec(class = "sf")
+save(bec_sf, file = bec_fn) 
+```
+
+Note: the **bcmaps** package must be installed and loaded to run the `bec()` function.
+
+
+4. Create a folder on your hard drive for this project. It could be named, for example,`c:/cshs/spatial_vector`.
+
+5. Open RStudio and click on **File ... New Project ... Existing Directory** and then navigate to the project folder and click on **Create Project**.
+
+6. Within the project folder, create a folder named "data".
+
+7. Copy the following files into the "data" folder:
+
+* `ec_station_inventory.csv`
+* `wsc_fraser_tribs.rda` 
+* `bec.rda` (see note 3, above, about accessing the data)
+* files containing the Fraser River catchment shape files (root name `08MF005_1` and extensions `.shp`, `.shx`, `.prj`, `.qpj` and `shp.xml`).
+
+8. Copy `cshs_web_sf_examples.rmd` into the project folder.
+
+9. Open `cshs_web_sf_examples.rmd` in RStudio. You should be able either to knit the document or to run the code chunks individually by clicking on the green right-pointing triangle in the top right corner of each chunk.
+
+
+**Note** 
+
+If you are unfamiliar with organizing your work within projects and the **here** package, review the links below:
+
+* https://www.tidyverse.org/blog/2017/12/workflow-vs-script/
+
+* https://malco.io/2018/11/05/why-should-i-use-the-here-package-when-i-m-already-using-projects/
+
+
+# Example 1: Mapping Canadian weather stations by length of record for hourly data
+
+We will generate a **sf** object containing the weather station coordinates and data using the Environment and Climate Change station inventory, which is accessible via 
+
+* https://drive.google.com/drive/folders/1WJCDEU34c60IfOnG4rv5EPZ4IhhW9vZH
+
+We will add coastlines and Canada's borders with the United States by adapting the polygons available from NaturalEarth.
+
+First, we define the Canadian Albers equal-area projection.
+
+```{r}
+# Canadian Albers equal area projection - proj4string
+cdn_aea = "+proj=aea +lat_1=50 +lat_2=70 +lat_0=40 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
+```
+
+Now we read in the station inventory, compute the number of years of record for hourly data, and then convert to a **sf** object.
+
+```{r}
+ec_fn <- here::here("data", "ec_station_inventory.csv")
+ec <- read.csv(ec_fn, skip = 3) %>%
+  mutate(stn_name = Name,
+         province = Province,
+         climate_id = Climate.ID,
+         wmo_id = WMO.ID,
+         lat = Latitude..Decimal.Degrees.,
+         lon = Longitude..Decimal.Degrees.,
+         elev = Elevation..m.,
+         hly_y1 = HLY.First.Year,
+         hly_y2 = HLY.Last.Year,
+         dly_y1 = DLY.First.Year,
+         dly_y2 = DLY.Last.Year,
+         mly_y1 = MLY.First.Year,
+         mly_y2 = MLY.Last.Year) %>%
+  dplyr::select(stn_name:mly_y2) %>%
+  dplyr::filter(lon < -50) %>%
+  mutate(dly_ny = dly_y2 - dly_y1,
+         hly_ny = hly_y2 - hly_y1)
+
+# create sf object
+ec_sf <- st_as_sf(ec, coords = c("lon", "lat"))
+
+# specify crs as longlat
+st_crs(ec_sf) <- 4326
+
+# quick look at sf object
+head(ec_sf[, 1:10])
+```
+
+
+Below, we create the base map layer. The data were read from a server and saved to the local hard drive the first time the script was run, after which the data are read from the local hard drive.
+
+```{r}
+# access NaturalEarth boundary polygons
+ne_fn <- here::here("data", "na_ne.rda")
+if (file.exists(ne_fn)) {
+  load(ne_fn)
+} else {
+  na_ne <- ne_countries(continent = "north america")
+  save(na_ne, file = ne_fn)
+} 
+```
+
+Now convert the data to an **sf** object. 
+
+```{r}
+# convert to sf object and take a quick look 
+na_sf <- st_as_sf(na_ne)
+head(na_sf[, 1:10])
+```
+
+Next, extract the geometry, and crop to focus on Canada.
+
+```{r}
+# define bounding box for Canada base map and crop
+bb_ca <- c(
+  xmin = -180,
+  ymin = 40,
+  xmax = -10,
+  ymax = 85
+)
+ca_sf <- na_sf %>%
+  st_geometry() %>%
+  st_crop(bb_ca)
+```
+
+Generate a quick plot to check.
+
+```{r}
+par(tcl = -0.2, mgp = c(2, 0.5, 0))
+plot(ca_sf, graticule = TRUE, axes = TRUE)
+```
+
+
+
+Now we convert the variable representing record length into a set of ordered categories. The `drop_na()` deletes rows with `hly_ny` equal to NA. Otherwise, they would get lumped into the last category.
+
+```{r}
+ec_hly <- ec_sf %>%
+  drop_na(hly_ny) %>%
+  mutate(hly_class = case_when(
+    hly_ny < 11 ~ "1-10 years",
+    hly_ny < 21 ~ "11-20 years",
+    hly_ny < 31 ~ "21-30 years", 
+    TRUE ~ ">30 years"
+  )) %>%
+  mutate(hly_class = factor(hly_class,
+                            levels = c("1-10 years", "11-20 years", 
+                                       "21-30 years", ">30 years")))
+head(ec_hly)
+```
+
+Finally we plot the map. The first `geom_sf()` function call defines the base layer, and the second adds the points. The `facet_wrap()` function generates a set of maps, one for each category of record length. As mentioned earlier, both **sf** objects use longlat as the CRS, and the `coord_sf()` controls how the map is projected.
+
+```{r}
+ggplot() +
+  geom_sf(data = ca_sf, fill = "white", col = "grey") + 
+  geom_sf(data = ec_hly, aes(group = hly_class), col = my_blue) +
+  facet_wrap(vars(hly_class)) +
+  coord_sf(crs = cdn_aea) 
+```
+
+
+# Example 2: Finding weather stations that are within or near a catchment boundary
+
+In this example, we will identify all weather stations (active or inactive) that lie within the catchment boundary for the Water Survey of Canada (WSC) station on Fraser River at Hope (station number 08MF075), or within 100 km of the catchment boundary. Catchment boundaries for WSC stations have been compiled as shape files by various government agencies, and are available from the @govcanada2019.
+
+We first read in the shape file for the catchment boundary. Note that the WSC catchment boundaries had been previously downloaded, and the shape files for Fraser River at Hope were stored in the "data" sub-folder for this project.
+
+```{r}
+# Water Survey of Canada station number for Fraser R at Hope
+stn_num <- "08MF005"
+
+# get catchment boundary, tranform to BC Albers projection
+fr_dsn <- here::here("data", paste0(stn_num,"_1.shp"))
+fr <- st_read(dsn = fr_dsn) 
+fr_albers <- st_transform(fr, crs = 3005)
+```
+
+Now we add the buffer and plot the results to check.
+
+```{r}
+# add 100-km buffer
+fr_buffer <- st_buffer(fr_albers, dist = 1e5)
+par(tcl = -0.2, mgp = c(2, 0.5, 0))
+plot(st_geometry(fr_buffer), graticule = TRUE, axes = TRUE)
+plot(st_geometry(fr_albers), add = TRUE)
+```
+
+Now we transform the **sf** object containing the Environment Canada station inventory to BC Albers projection.
+
+```{r}
+# get weather station locations, create sf object
+ec_albers <- st_transform(ec_sf, crs = st_crs(fr_albers))
+```
+
+Generate check plot.
+
+```{r}
+par(tcl = -0.2, mgp = c(2, 0.5, 0))
+plot(st_geometry(fr_buffer), graticule = TRUE, axes = TRUE)
+plot(st_geometry(fr_albers), add = TRUE)
+plot(st_geometry(ec_albers), col = my_blue, add = TRUE)
+```
+
+Now we conduct the point-in-polygon search to select the stations within the buffered catchment area.
+
+```{r}
+# perform point-in-polygon search using st_filter()
+ec_fr <- st_filter(ec_albers, fr_buffer) 
+
+# look at result
+head(ec_fr)
+```
+
+Now we plot the catchment boundary, buffer and points within a map of British Columbia, using the provincial boundary and river network layers from **bcmaps**.
+
+```{r}
+bcb <- bc_bound()
+bcw <- watercourses_5M()
+
+ggplot() +
+  geom_sf(data = bcb, fill = NA) +
+  geom_sf(data = fr_buffer, fill = NA, col = "orange") +
+  geom_sf(data = fr_albers, col = "red", fill = NA) +
+  geom_sf(data = bcw, col = "lightblue") +
+  geom_sf(data = ec_fr, col = my_blue) 
+```
+
+# Example 3: Determining alpine cover in major tributaries in the Fraser River basin
+
+This example illustrates the use of `st_intersection()` for two sets of polygons. In this specific case, the goal is to determine the fraction of a catchment covered by alpine vegetation.
+
+
+## Data compilation
+
+### Biogeoclimatic ecological classification zones
+
+The Biogeoclimatic Ecological Classification (BEC) zone system was developed initially for applications in forest management, but has been found to be a powerful tool for characterizing biophysical site characteristics in a broad range of applications. For example, @Trubilowicz2013HP applied it with success to prediction of streamflow regimes for ungauged catchments in British Columbia. 
+
+The BEC zone system is hierarchical. The top level are zones, of which there are 16 classes. Within the zones are sub-zones and then variants. We will focus on the zone level of classification.
+
+First, we read in the shape files for the BEC zones. The first time the code is run, it accesses the shape files via `bec()` function in the **bcmaps** package and then stores the data on the local hard drive as a RDA file. The second and subsequent times the code is run, the data are read from the local hard drive.
+
+```{r}
+bec_fn <- here::here("data", "bec.rda")
+if (file.exists(bec_fn)) {
+  load(bec_fn)
+} else {
+  bec_sf <- bec(class = "sf")
+  save(bec_sf, file = bec_fn)
+}
+```
+
+
+### Catchment boundaries
+
+The catchment boundaries can currently be accessed via @govcanada2019. In this case, the polygons had been downloaded and were accessed for this exercise from my local hard drive. The first step is to create a vector of the station numbers for some of the tributaries.
+
+```{r}
+# create a vector with station ids for some major tributaries to Fraser River
+wsc_fr <- c("08kc001", "08jc002", "08kg001", "08kh006", "08ke016", 
+            "08me002", "08mf065", "08lf051") %>% toupper()
+```
+
+The first time the next code chunk is run, it reads in the polygons for selected WSC stations on some major tributaries to Fraser River as individual layers and stores them in a list. These are then assembled into a **sf** object and then saved as an RDA file. After the first time the code chunk is run, the code loads the data as an RDA file.
+
+A caveat regarding the code chunk below is that I have had no previous experience with GDB files, and was unable to figure out how to read more than one layer at a time. The code below works, but there is probably a more elegant way to compile multiple layers into a **sf** object.
+
+```{r}
+# read in the WSC polygons
+wsc_fn <- here::here("data", "wsc_fraser_tribs.rda")
+if (file.exists(wsc_fn)) {
+  load(wsc_fn)
+} else {
+  fr_polygons <- list()
+  wsc_gdb <- "C:/Data/wsc_polygons_2020Nov29/WSC_Basins.gdb"
+  for (i in 1:length(wsc_fr)) {
+    fr_polygons[[i]] <- st_read(wsc_gdb, 
+                        layer = paste0("EC_", wsc_fr[i], "_1")) 
+  }
+  frpoly_sf <- st_as_sf(fr_polygons[[1]])
+  for (i in 2:length(wsc_fr)) {
+    frpoly_sf <- rbind(frpoly_sf, fr_polygons[[i]])
+  }
+  save(frpoly_sf, file = wsc_fn)
+}
+```
+
+Prior to analysis, we project the polygons to BC Albers projection for consistency with the BEC data set.
+
+```{r}
+frpoly_albers <- frpoly_sf %>% st_transform(crs = 3005)
+wsc_stns <- frpoly_albers %>% 
+  st_set_geometry(NULL) %>%
+  dplyr::select(Station, stn_name = StationNam, basin_area = Shape_Area)
+knitr::kable(wsc_stns)
+```
+
+```{r}
+par(tcl = -0.2, mgp = c(2, 0.5, 0))
+plot(st_geometry(frpoly_albers), graticule = TRUE, axes = TRUE)
+```
+
+
+## Analysis
+
+Within the BEC zone system, three classes represent alpine cover: CMA (Coast Mountain-heather Alpine), IMA (Interior Mountain-heather Alpine), and Boreal Altai Fescue Alpine (BAFA).
+
+First, apply a filter to retain only the BEC zones representing alpine cover.
+
+```{r}
+alpine <- bec_sf %>%
+  dplyr::filter(ZONE %in% c("IMA", "CMA", "BAFA"))
+head(alpine)
+```
+
+Now generate a map with the British Columbia border and catchment boundaries overlaid.
+
+```{r}
+ggplot() +
+  geom_sf(data = alpine, col = "lightgrey") +
+  geom_sf(data = bcb, fill = NA) +
+  geom_sf(data = bcw, col = "lightblue") +
+  geom_sf(data = frpoly_albers, fill = NA, col = "red")
+```
+
+Next, intersect the catchment and alpine cover polygons.
+
+```{r}
+wsc_alp_int <- st_intersection(frpoly_albers, alpine)
+head(wsc_alp_int)
+```
+
+As a check, we look at the Nahatlatch River catchment as an example. The catchment boundary is in black and the intersected alpine polygons are in transparent blue.
+
+```{r, eval = TRUE}
+nahat_sf <- frpoly_albers %>%
+  dplyr::filter(Station == "08MF065")
+
+par(tcl = -0.2, mgp = c(2, 0.5, 0))
+plot(st_geometry(nahat_sf), border = "black", 
+     graticule = TRUE, axes = TRUE)
+plot(st_geometry(wsc_alp_int), add = TRUE, 
+     border = my_blue, col = my_blue)
+```
+
+Compute areas within the intersected polygons and sum them within each catchment.
+
+```{r}
+# compute area of each intersected polygon
+alpine_area <- st_area(wsc_alp_int) 
+
+# add area to sf object containing intersected polygons
+wsc_alp_int$alpine_area <- alpine_area
+
+# sum alpine areas within each catchment
+wsc_alpine_areas <- wsc_alp_int %>%
+  st_set_geometry(NULL) %>%
+  group_by(Station) %>%
+  summarize(wsc_alpine = sum(alpine_area)) %>%
+  ungroup() 
+knitr::kable(wsc_alpine_areas)
+```
+
+
+Finally, compute the fractional coverage.
+
+```{r}
+# combine with wsc station info and calculate alpine fraction
+wsc_alp_frac <- wsc_stns %>%
+  left_join(wsc_alpine_areas, by = "Station") %>%
+  mutate(wsc_alpine = ifelse(is.na(wsc_alpine), 0, wsc_alpine)) %>%
+  mutate(alpine_percent = 100*round(wsc_alpine/basin_area, digits = 3)) %>%
+  dplyr::select(Station, stn_name, alpine_percent)
+  
+names(wsc_alp_frac) <- c("Station", "Station name", "Alpine cover (%)")
+knitr::kable(wsc_alp_frac)
+```
+
+# References
+
+
