@@ -15,5 +15,5 @@ install.packages(package_list)
 ## Register for the webinar
 Please register for this webinar may be found here. https://cshs.cwra.org/cshs-hydrology-spatialprocessing/
 
-## Rewatch the webianr
+## Rewatch the webinar
 Webinar recordings and upcoming webinars from CSHS may be found on the [CSHS Webinars page](https://cshs.cwra.org/webinars/).
